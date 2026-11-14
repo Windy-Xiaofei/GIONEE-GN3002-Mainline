@@ -18,6 +18,16 @@ if [ -c /dev/console ]; then
 	exec >/dev/console 2>&1 </dev/console
 fi
 
+# ---- 看门狗解除（LK 跳内核时 WDT 在跑，主线内核没有喂狗者）----
+# 优先 magic-close 停用 /dev/watchdog（mtk_wdt 驱动已接管时）；
+# 否则直接写 TOPRGU WDT_MODE 寄存器（0x10212000，清 0 = 禁用）。
+if [ -c /dev/watchdog ]; then
+	echo V > /dev/watchdog 2>/dev/null \
+		&& echo "wdt: disarmed via magic-close"
+fi
+busybox devmem 0x10212000 32 0 2>/dev/null \
+	&& echo "wdt: WDT_MODE cleared via devmem"
+
 echo ""
 echo "################################################"
 echo "#  GN3002 mainline kernel - initramfs reached  #"

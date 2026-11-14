@@ -45,13 +45,12 @@
 	};
 
 	/*
-	 * 先用 2GB（0x40000000-0xC0000000）：3GB 机器低 2GB 一定是 RAM，
-	 * 而 3GB 在 LPAE 下可能被拆到 0x100000000 以上，猜错会直接崩。
-	 * 跑起来后用 /proc/iomem 核实真实布局再放大。
+	 * 跟随社区已验证做法（Doogee X5 Pro / mt6735-mainline）：只声明低 1GB 减 16MB。
+	 * 3GB 机器的高段内存（0xA0000000 起）等跑起来后再用 /proc/iomem 核实放开。
 	 */
 	memory@40000000 {
 		device_type = "memory";
-		reg = <0 0x40000000 0 0x80000000>;
+		reg = <0 0x40000000 0 0x3f000000>;
 	};
 
 	reserved-memory {
@@ -103,6 +102,22 @@
 /delete-node/ &cpu1;
 /delete-node/ &cpu2;
 /delete-node/ &cpu3;
+
+/*
+ * MT6735 的 PSCI 是社区实锤的坏实现（见 mt6735-mainline/mt6735-smp-fix：
+ * CPU_ON 后不会自动上电电源域）。原厂内核用私有 "mt-boot" 绕开了它。
+ * 内核若保留 psci 节点，idle/探测会走 smc —— 单核首启阶段直接删掉，
+ * idle 回落到 WFI；等集成 mt6735-smp-fix 后再恢复四核。
+ */
+/ {
+	/delete-node/ psci;
+};
+
+&cpu0 {
+	/* cpu-release-addr = 0：内核不会尝试用它拉起 CPU（mt6735-smp-fix README 推荐） */
+	enable-method = "spin-table";
+	cpu-release-addr = <0 0>;
+};
 
 &pwrap {
 	status = "okay";
