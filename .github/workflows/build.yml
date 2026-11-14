@@ -36,6 +36,21 @@ jobs:
           mv "linux-$KCOMMIT" kernel
           du -sh kernel
 
+      - name: Prepare initramfs (fetch static busybox for aarch64)
+        run: |
+          mkdir -p initramfs/bin
+          chmod +x initramfs/init
+          URL=https://ports.ubuntu.com/ubuntu-ports/pool/main/b/busybox
+          DEB=$(curl -sL "$URL/" | grep -oE 'busybox-static_[0-9][^"]*_arm64\.deb' | sort -V | tail -1)
+          echo "downloading $DEB"
+          curl -sLO "$URL/$DEB"
+          dpkg-deb -x "$DEB" bb-extract
+          BUSYBOX=$(find bb-extract -name busybox -type f | head -1)
+          cp "$BUSYBOX" initramfs/bin/busybox
+          chmod 755 initramfs/bin/busybox
+          file initramfs/bin/busybox
+          ./initramfs/bin/busybox 2>&1 | head -2 || true
+
       - name: Overlay device tree
         run: |
           cp dts/mt6735-gionee-gn3002.dts kernel/arch/arm64/boot/dts/mediatek/
@@ -88,5 +103,85 @@ jobs:
         with:
           name: gn3002-boot
           path: out/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # QEMU 冒烟测试：MT6735 无法完整模拟，但可以用 virt 虚拟机
+  # （同为 4x Cortex-A53）验证「内核本体 + initramfs 逻辑」是否健康，
+  # 把「内核问题」和「MT6735 硬件适配问题」区分开。
+  qemu-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu make xz-utils \
+            qemu-system-arm
+
+      - name: Fetch kernel source
+        run: |
+          curl -L --retry 3 --retry-delay 5 -o linux.tar.gz \
+            "$KURL/$KCOMMIT/linux-$KCOMMIT.tar.gz"
+          tar xf linux.tar.gz
+          mv "linux-$KCOMMIT" kernel
+
+      - name: Prepare initramfs (fetch static busybox for aarch64)
+        run: |
+          mkdir -p initramfs/bin
+          chmod +x initramfs/init
+          URL=https://ports.ubuntu.com/ubuntu-ports/pool/main/b/busybox
+          DEB=$(curl -sL "$URL/" | grep -oE 'busybox-static_[0-9][^"]*_arm64\.deb' | sort -V | tail -1)
+          echo "downloading $DEB"
+          curl -sLO "$URL/$DEB"
+          dpkg-deb -x "$DEB" bb-extract
+          BUSYBOX=$(find bb-extract -name busybox -type f | head -1)
+          cp "$BUSYBOX" initramfs/bin/busybox
+          chmod 755 initramfs/bin/busybox
+
+      - name: Configure for QEMU virt
+        run: |
+          cd kernel
+          cp ../config/pmos-mt6735.config .config
+          ./scripts/config \
+            --disable CMDLINE_FORCE \
+            --set-str CMDLINE "" \
+            --enable ARM_AMBA \
+            --enable SERIAL_AMBA_PL011 \
+            --enable SERIAL_AMBA_PL011_CONSOLE \
+            --enable SERIAL_EARLYCON
+          ./scripts/config --set-str INITRAMFS_SOURCE "$PWD/../initramfs"
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          grep -E '^CONFIG_(CMDLINE|SERIAL_AMBA_PL011|SERIAL_EARLYCON|INITRAMFS_SOURCE)=' .config
+
+      - name: Build Image
+        run: |
+          cd kernel
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image
+
+      - name: Boot in QEMU and check initramfs banner
+        run: |
+          timeout 90 qemu-system-aarch64 \
+            -M virt,gic-version=2 -cpu cortex-a53 -m 1024 \
+            -nographic -no-reboot \
+            -kernel kernel/arch/arm64/boot/Image \
+            -append "console=ttyAMA0 earlycon=pl011,0x09000000 loglevel=7 panic=-1" \
+            > serial.log 2>&1 || true
+          echo "=== serial output (last 40 lines) ==="
+          tail -40 serial.log
+          grep -q "GN3002 mainline kernel - initramfs reached" serial.log \
+            && echo "SMOKE TEST PASSED" \
+            || { echo "SMOKE TEST FAILED"; exit 1; }
+
+      - name: Upload serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-serial-log
+          path: serial.log
           if-no-files-found: error
           retention-days: 30
