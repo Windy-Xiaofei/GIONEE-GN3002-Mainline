@@ -29,15 +29,14 @@
 		stdout-path = "framebuffer";
 
 		/*
-		 * LK 已经把面板点亮并把帧缓冲放在 FB_BASE。
-		 * TODO: FB_BASE / stride 必须从设备实测（scripts/collect-device-info.sh）。
-		 *       地址猜错 = 内核往错误物理内存写像素，会把内存写花，所以
-		 *       在拿到实测值之前保持 disabled，首启走 USB 串口 + pstore。
+		 * 帧缓冲由 LK 初始化：原厂 DTB 的 MTKFB 节点给出
+		 *   reg = <0x7e000000 0x1000000>   (物理基址 0x7e000000, 16MB)
+		 * 实测 /sys/class/graphics/fb0：stride=2944, virtual_size=736,3840, 32bpp
+		 * 面板 lcm=1-tm_ft8606 (天马 + FT8606 触摸)
 		 */
-		framebuffer: framebuffer@bf330000 {
+		framebuffer: framebuffer@7e000000 {
 			compatible = "simple-framebuffer";
-			status = "disabled";
-			reg = <0 0xbf330000 0 0x1000000>;
+			reg = <0 0x7e000000 0 0x1000000>;
 			width = <720>;
 			height = <1280>;
 			stride = <2944>;
@@ -72,9 +71,8 @@
 			pmsg-size = <0x10000>;
 		};
 
-		fb_mem: memory@bf330000 {
-			status = "disabled";
-			reg = <0 0xbf330000 0 0x1000000>;
+		fb_mem: memory@7e000000 {
+			reg = <0 0x7e000000 0 0x1000000>;
 			no-map;
 		};
 	};
