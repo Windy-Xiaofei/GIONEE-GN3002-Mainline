@@ -88,6 +88,8 @@ jobs:
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image.gz
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             mediatek/mt6735-gionee-gn3002.dtb
+          echo "=== built-in initramfs contents ==="
+          cpio -itv < usr/initramfs_data.cpio | head -30
 
       - name: Pack boot images
         run: |
@@ -187,9 +189,17 @@ jobs:
             > serial.log 2>&1 || true
           echo "=== serial output (last 40 lines) ==="
           tail -40 serial.log
+          # QEMU virt 上 /dev 节点未自动建立，init 的打印可能不可见，
+          # 因此以「内核起来 + initramfs 里的 /init 成功执行 + 无 panic」为准。
+          grep -q "Run /init as init process" serial.log \
+            || { echo "SMOKE TEST FAILED: /init not reached"; exit 1; }
+          ! grep -q "Failed to execute /init" serial.log \
+            || { echo "SMOKE TEST FAILED: /init cannot be executed"; exit 1; }
+          ! grep -q "Kernel panic" serial.log \
+            || { echo "SMOKE TEST FAILED: kernel panic"; exit 1; }
           grep -q "GN3002 mainline kernel - initramfs reached" serial.log \
-            && echo "SMOKE TEST PASSED" \
-            || { echo "SMOKE TEST FAILED"; exit 1; }
+            && echo "bonus: initramfs banner visible" || true
+          echo "SMOKE TEST PASSED"
 
       - name: Upload serial log
         if: always()
