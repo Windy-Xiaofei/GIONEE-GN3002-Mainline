@@ -7,8 +7,9 @@ export HOME=/
 # 让所有 busybox applet 都能用（initramfs 是 ramfs，可写）
 /bin/busybox --install -s /bin 2>/dev/null
 
+# 兜底：即使打包时没带上这些空目录，也要保证挂载点存在
+mkdir -p /dev /proc /sys /tmp /dev/pts
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
-mkdir -p /dev/pts /proc /sys /tmp
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devpts devpts /dev/pts 2>/dev/null
