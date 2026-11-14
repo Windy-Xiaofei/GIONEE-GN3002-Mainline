@@ -21,6 +21,9 @@ echo ""
 echo "################################################"
 echo "#  GN3002 mainline kernel - initramfs reached  #"
 echo "################################################"
+# 某些平台 /dev/console 未能建立时，通过 kmsg 保证标记能出现在串口日志里
+[ -w /dev/kmsg ] && \
+	echo "<6>GN3002 mainline kernel - initramfs reached" > /dev/kmsg
 uname -a
 echo "cmdline: $(cat /proc/cmdline)"
 echo

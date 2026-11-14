@@ -48,6 +48,12 @@ jobs:
           BUSYBOX=$(find bb-extract -name busybox -type f | head -1)
           cp "$BUSYBOX" initramfs/bin/busybox
           chmod 755 initramfs/bin/busybox
+          cd initramfs/bin
+          for a in sh ash ls cat mount umount sleep echo mkdir mknod dmesg \
+                   uname grep head poweroff reboot setsid true printf pwd; do
+            ln -sf busybox "$a"
+          done
+          ls -l sh
           file initramfs/bin/busybox
           ./initramfs/bin/busybox 2>&1 | head -2 || true
 
@@ -143,6 +149,12 @@ jobs:
           BUSYBOX=$(find bb-extract -name busybox -type f | head -1)
           cp "$BUSYBOX" initramfs/bin/busybox
           chmod 755 initramfs/bin/busybox
+          cd initramfs/bin
+          for a in sh ash ls cat mount umount sleep echo mkdir mknod dmesg \
+                   uname grep head poweroff reboot setsid true printf pwd; do
+            ln -sf busybox "$a"
+          done
+          ls -l sh
 
       - name: Configure for QEMU virt
         run: |
@@ -158,7 +170,7 @@ jobs:
           ../scripts/trim-config.sh .
           ./scripts/config --set-str INITRAMFS_SOURCE "$PWD/../initramfs"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          grep -E '^CONFIG_(CMDLINE|SERIAL_AMBA_PL011|SERIAL_EARLYCON|INITRAMFS_SOURCE)=' .config
+          grep -E '^CONFIG_(CMDLINE|SERIAL_AMBA_PL011|SERIAL_EARLYCON|INITRAMFS_SOURCE|BLK_DEV_INITRD|RD_GZIP|DEVTMPFS_MOUNT)=' .config
 
       - name: Build Image
         run: |
