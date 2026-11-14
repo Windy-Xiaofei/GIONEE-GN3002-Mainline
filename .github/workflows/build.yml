@@ -1,0 +1,88 @@
+name: build-boot-img
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  # 锁死内核版本：mt6735-mainline/linux 的 mt6735-staging 分支
+  KCOMMIT: a62a3e8f93c1f1d047167c6944339732ffa38f54
+  KURL: https://gitlab.com/mt6735-mainline/linux/-/archive
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev device-tree-compiler \
+            gcc-aarch64-linux-gnu make python3 xz-utils
+
+      - name: Fetch kernel source
+        run: |
+          curl -L --retry 3 --retry-delay 5 -o linux.tar.gz \
+            "$KURL/$KCOMMIT/linux-$KCOMMIT.tar.gz"
+          tar xf linux.tar.gz
+          mv "linux-$KCOMMIT" kernel
+          du -sh kernel
+
+      - name: Overlay device tree
+        run: |
+          cp dts/mt6735-gionee-gn3002.dts kernel/arch/arm64/boot/dts/mediatek/
+          sed -i '3i dtb-$(CONFIG_ARCH_MEDIATEK) += mt6735-gionee-gn3002.dtb' \
+            kernel/arch/arm64/boot/dts/mediatek/Makefile
+          grep -n gionee kernel/arch/arm64/boot/dts/mediatek/Makefile
+
+      - name: Configure
+        run: |
+          cd kernel
+          cp ../config/pmos-mt6735.config .config
+          ./scripts/config \
+            --enable MFD_MT6397 \
+            --enable KEYBOARD_MTK_PMIC \
+            --enable USB_MUSB_MEDIATEK \
+            --enable NOP_USB_XCEIV \
+            --enable TOUCHSCREEN_EDT_FT5X06 \
+            --enable CMDLINE_FORCE \
+            --enable PSTORE_PMSG \
+            --enable FB_SIMPLE
+          ./scripts/config --set-str INITRAMFS_SOURCE "$PWD/../initramfs"
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          grep -E '^CONFIG_(INITRAMFS_SOURCE|CMDLINE|CMDLINE_FORCE|MTK_PMIC_WRAP|REGULATOR_MT6328|MMC_MTK|PINCTRL_MT6735)=' .config
+
+      - name: Build Image.gz and DTB
+        run: |
+          cd kernel
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image.gz
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            mediatek/mt6735-gionee-gn3002.dtb
+
+      - name: Pack boot images
+        run: |
+          mkdir -p out
+          cp kernel/arch/arm64/boot/Image.gz out/Image.gz
+          cp kernel/arch/arm64/boot/dts/mediatek/mt6735-gionee-gn3002.dtb out/
+          gunzip -c out/Image.gz > out/Image
+          python3 scripts/mkbootimg_mtk.py \
+            --kernel out/Image.gz --dtb out/mt6735-gionee-gn3002.dtb \
+            --cmdline "bootopt=64S3,32N2,64N2" --name gn3002 \
+            --out out/boot-gz.img
+          python3 scripts/mkbootimg_mtk.py \
+            --kernel out/Image --dtb out/mt6735-gionee-gn3002.dtb \
+            --cmdline "bootopt=64S3,32N2,64N2" --name gn3002 \
+            --out out/boot-raw.img
+          (cd out && sha256sum *.img *.dtb *.gz)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gn3002-boot
+          path: out/*
+          if-no-files-found: error
+          retention-days: 30

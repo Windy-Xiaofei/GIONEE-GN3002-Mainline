@@ -1,0 +1,204 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Gionee GN3002 (F306) - MediaTek MT6735
+ *
+ * 5" 720x1280 IPS, 3GB LPDDR3, 32GB eMMC, MT6328 PMIC.
+ * Boot chain: preloader -> LK (bootopt=64S3,32N2,64N2) -> arm64 Image + DTB.
+ *
+ * 状态：骨架。标 TODO 的数值必须从设备上实测，不能猜。
+ */
+
+/dts-v1/;
+
+#include "mt6735.dtsi"
+#include "mt6328.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/pinctrl/mediatek,mt6735-pinctrl.h>
+
+/ {
+	model = "Gionee GN3002";
+	compatible = "gionee,gn3002", "mediatek,mt6735";
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		bootargs = "console=tty0 ignore_loglevel clk_ignore_unused pd_ignore_unused regulator_ignore_unused";
+		stdout-path = "framebuffer";
+
+		/*
+		 * LK 已经把面板点亮并把帧缓冲放在 FB_BASE。
+		 * TODO: FB_BASE / stride 必须从设备实测（scripts/collect-device-info.sh）。
+		 *       地址猜错 = 内核往错误物理内存写像素，会把内存写花，所以
+		 *       在拿到实测值之前保持 disabled，首启走 USB 串口 + pstore。
+		 */
+		framebuffer: framebuffer@bf330000 {
+			compatible = "simple-framebuffer";
+			status = "disabled";
+			reg = <0 0xbf330000 0 0x1000000>;
+			width = <720>;
+			height = <1280>;
+			stride = <2944>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	/*
+	 * 先用 2GB（0x40000000-0xC0000000）：3GB 机器低 2GB 一定是 RAM，
+	 * 而 3GB 在 LPAE 下可能被拆到 0x100000000 以上，猜错会直接崩。
+	 * 跑起来后用 /proc/iomem 核实真实布局再放大。
+	 */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0x80000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* 盲调时唯一的现场：pstore/ramoops。地址须避开 kernel(0x40080000+16M)
+		 * 和 ramdisk(0x44000000)，这里放在两者之间的空隙。 */
+		ramoops@43f10000 {
+			compatible = "ramoops";
+			reg = <0 0x43f10000 0 0xe0000>;
+			no-map;
+			record-size = <0x80000>;
+			console-size = <0x10000>;
+			ftrace-size = <0x20000>;
+			pmsg-size = <0x10000>;
+		};
+
+		fb_mem: memory@bf330000 {
+			status = "disabled";
+			reg = <0 0xbf330000 0 0x1000000>;
+			no-map;
+		};
+	};
+
+	/* TODO: 音量键。可能是 KP 矩阵，也可能走 GPIO，需 getevent 确认。 */
+	gpio-keys {
+		compatible = "gpio-keys";
+		status = "disabled";
+
+		key-volume-up {
+			label = "Volume Up";
+			linux,code = <KEY_VOLUMEUP>;
+			gpios = <&pio 84 GPIO_ACTIVE_LOW>;
+		};
+
+		key-volume-down {
+			label = "Volume Down";
+			linux,code = <KEY_VOLUMEDOWN>;
+			gpios = <&pio 85 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+/*
+ * 首启先用单核：MT6735 上从核启动依赖 TZ/PSCI，社区反馈部分机器会挂
+ * （mt6735-mainline 也是先删掉 cpu1-3）。等单核跑通再逐个放开。
+ */
+/delete-node/ &cpu1;
+/delete-node/ &cpu2;
+/delete-node/ &cpu3;
+
+&pwrap {
+	status = "okay";
+};
+
+/* 电源键在 PMIC 内部，MT6328 keys */
+&mt6328_keys {
+	status = "okay";
+};
+
+&mmc0 {
+	status = "okay";
+
+	vmmc-supply = <&mt6328_vemc33_reg>;
+	vqmmc-supply = <&mt6328_vio18_reg>;
+
+	bus-width = <8>;
+	max-frequency = <200000000>;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	non-removable;
+
+	mediatek,hs200-cmd-int-delay = <11>;
+	mediatek,latch-ck = <1>;
+};
+
+&mmc1 {
+	status = "okay";
+
+	vmmc-supply = <&mt6328_vmc_reg>;
+	vqmmc-supply = <&mt6328_vmch_reg>;
+
+	bus-width = <4>;
+	max-frequency = <200000000>;
+	cap-sd-highspeed;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	sd-uhs-ddr50;
+
+	/* 原厂 DTB: MSDC1_INS = EINT5 */
+	cd-gpios = <&pio 5 GPIO_ACTIVE_LOW>;
+};
+
+&usb2 {
+	status = "okay";
+	dr_mode = "peripheral";
+
+	usb_con: connector {
+		compatible = "usb-b-connector";
+		type = "micro";
+	};
+};
+
+&usb2phy {
+	status = "okay";
+};
+
+/*
+ * 触摸：原厂 DTB 里 TOUCH_PANEL = EINT10，控制器是 FocalTech FT5x26/FT8606
+ * 或 Solomon SSD6600（按面板批次二选一）。
+ * TODO: i2c 总线号 / 地址 / reset GPIO 需实测确认。
+ */
+&i2c1 {
+	status = "okay";
+
+	touchscreen@38 {
+		compatible = "edt,edt-ft5206";
+		reg = <0x38>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touchscreen_default>;
+		vcc-supply = <&mt6328_vgp1_reg>;
+		reset-gpios = <&pio 62 GPIO_ACTIVE_LOW>;
+		interrupt-parent = <&pio>;
+		interrupts = <10 IRQ_TYPE_EDGE_FALLING>;
+		touchscreen-size-x = <720>;
+		touchscreen-size-y = <1280>;
+		status = "disabled";
+	};
+};
+
+&pio {
+	touchscreen_default: touchscreen-default-pins {
+		pins-reset {
+			pinmux = <PINMUX_GPIO62__FUNC_GPIO62>;
+		};
+		pins-eint {
+			pinmux = <PINMUX_GPIO10__FUNC_GPIO10>;
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
