@@ -1,93 +1,73 @@
-# GIONEE GN3002 mainline
+# GIONEE GN3002 (GBL7356) 移植记录
 
-金立 GN3002（F306，MediaTek MT6735）跑 Linux 主线内核。
+金立 GN3002，代号 `GIONEE_GBL7356`，MediaTek **MT6735**，出厂 Android 5.1。
 
-用 GitHub Actions 交叉编译，产出可直接刷入 `boot` 分区的镜像。
+这个仓库记录这台机器的移植过程：**主线 Linux 部分已归档（结论是不划算），当前方向是 Android 8.1 / 9 的系统移植。**
 
-## 这个项目里没有 lk2nd
+## 现在在做什么
 
-lk2nd 是 Qualcomm 专用的二级引导器，依赖 aboot / QCDT / Qualcomm LK 的 fastboot
-协议。MT6735 的引导链是 `preloader → MTK LK`，两套 LK 只是同名，寄存器、
-启动参数、设备树传递方式全都不同。
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| 主线 Linux | 7.3 内核 + QEMU 冒烟验证 | **已归档**，见 [`docs/mainline-archive.md`](docs/mainline-archive.md) |
+| Android 8.1（LineageOS 15.1） | 源码编译框架 + 原厂 5.1 vendor blobs | 进行中，见 [`docs/PLAN.md`](docs/PLAN.md) |
+| Android 9（LineageOS 16.0） | 在 15.1 跑通后推进 | 待启动 |
 
-这颗 SoC 的原厂 LK 自己就能引导 arm64 内核 —— 原厂 boot.img 的 cmdline 是
-`bootopt=64S3,32N2,64N2`，最后一段就是让 LK 把内核切到 AArch64。所以不需要
-bootshim，也不需要 lk2nd。
+主线为什么停：MT6735 的主线支持缺 WiFi / 蓝牙 / 基带 / 音频 / 相机 / 待机，只能做出"单核、无网、无声"的开发板；而这台机器没有引出 UART，失败时没有任何日志可看，等于蒙眼改代码。两次刷机失败都是这个原因，不是配置写错。
 
-社区对应物是 [mt6735-mainline 的 U-Boot](https://gitlab.com/mt6735-mainline/u-boot)，
-作用类似 lk2nd（fastboot / 菜单 / 从内存引导），但不是必需品，留作后续可选项。
+**Android 移植不存在这个问题**：驱动全在原厂内核里，框架层跑起来后 `logcat` 就是完整的观测通道，而且有同 SoC 的成熟设备树可以参照。
 
-## 硬件
+## 硬件速查
 
 | 项目 | 值 |
 |---|---|
 | SoC | MT6735（4×Cortex-A53 @1.3GHz，Mali-T720 MP2） |
 | 内存 / 存储 | 3GB LPDDR3 / 32GB eMMC |
-| 屏幕 | 5" 720×1280 IPS（面板三选一：tcl_db7400 / tianma+FT8606 / tcl_xinsi xs4100） |
-| PMIC | MT6328 |
-| 触摸 | FocalTech FT5x26/FT8606 或 Solomon SSD6600，EINT=GPIO10 |
-| 传感器 | MC3410 / ITG1010 / AKM09911 / CM36652（i2c2） |
+| 屏幕 | 5" 720×1280，面板 `tm_ft8606`（天马 + 汇顶 FT8606） |
+| 用户空间 | **64 位**（`ro.zygote=zygote64_32`） |
+| 通信 | 双卡 dsda，MTK CCCI 基带；WiFi/BT 走 MTK WMT combo |
+| 原厂内核 | Linux 3.10.65，无独立模块（全内建） |
+| boot / recovery 分区 | 各 16MB（`mmcblk0p7` / `mmcblk0p8`） |
 
-完整清单见 `docs/PLAN.md`。
+完整清单（含分区表、HAL 列表、传感器型号）见 [`docs/hardware.md`](docs/hardware.md)。
 
-## 构建
+## 仓库结构
 
-推送到 `main` 或手动 `workflow_dispatch`，Actions 会：
-
-1. 拉取锁定 commit 的内核源码（mt6735-mainline/linux `mt6735-staging`，7.3.0-rc3）
-2. 套上本仓库的设备树 `dts/mt6735-gionee-gn3002.dts`
-3. 用 `config/pmos-mt6735.config` 做基线 + 打开必要选项
-4. 编译 `Image.gz` 与 DTB，打成 MTK 布局的 boot 镜像
-5. 上传 `gn3002-boot` artifact
-
-产物：
-
-| 文件 | 说明 |
-|---|---|
-| `boot-gz.img` | Image.gz + DTB 拼接，与原厂同构，**优先用这个** |
-| `boot-raw.img` | 裸 Image + DTB，超过 16MB boot 分区，只能 `fastboot boot` |
-| `Image.gz` / `mt6735-gionee-gn3002.dtb` | 单独的内核与设备树 |
-
-boot image 格式：page 2048，kernel blob = Image.gz 后紧跟 DTB，header 里
-`dt_size` 为 0（与原厂一致）。`scripts/mkbootimg_mtk.py` 用原厂件重打包可得到
-**逐字节一致**的镜像。
-
-## 刷机
-
-```bash
-# 先不写 flash，只进内存
-adb reboot bootloader
-fastboot boot boot-gz.img
-
-# 确认能起来再写
-fastboot flash boot boot-gz.img
+```
+docs/
+  hardware.md          硬件档案（从原厂固件实测得出）
+  PLAN.md              Android 移植计划与里程碑
+  FLASH.md             刷机与救砖手册（含已验证的救援流程）
+  mainline-archive.md  主线阶段归档：做过什么、发现了什么、为什么停
+config/                主线内核配置（归档）
+dts/                   主线设备树（归档）
+initramfs/             主线 initramfs（归档）
+scripts/               主线打包与裁剪脚本（归档）
+.github/workflows/     主线 CI（仍可手动触发，用 QEMU 验证内核）
 ```
 
-回滚：刷回备份的原厂 boot.img。只动 `boot` 分区，preloader / lk / tee 一概不碰。
+## 主线部分怎么用（归档）
 
-详细说明见 `docs/FLASH.md`。
+推送到 `main` 或手动触发 workflow，Actions 会用 `mt6735-mainline/linux` 的
+`mt6735-staging`（7.3.0-rc3）编译 `Image.gz` + DTB，并在 QEMU `virt` 上做冒烟测试
+（判据：`Run /init as init process` + 无 `Failed to execute` + 无 panic）。
+一次约 6 分钟。
 
-## 当前状态
+产物 `boot-gz.img` 与原厂 boot.img 同构，`scripts/mkbootimg_mtk.py` 用原厂件重打包
+可得到逐字节一致的结果。
 
-- [x] 原厂固件解析（MT6735 / 3GB / 32GB / 720×1280 / MT6328）
-- [x] boot.img 打包器验证（用原厂件重打包，逐字节一致）
-- [x] 设备树编译通过
-- [x] 内核 7.3.0-rc3 + 内建 initramfs 编译通过（本地与 CI 均通过）
-- [ ] 首次启动（判据：USB CDC-ACM 出现 `/dev/ttyACM0`）
-- [ ] 显示（等实测 FB 基址 / stride）
-- [ ] 触摸（等实测 i2c 总线 / 地址 / reset GPIO）
-- [ ] 音量键 / 充电 / 音频 / WiFi（长期）
+## 刷机前必读
 
-## 首启为什么黑屏
+**先确认救援链可用，再动任何分区。** 这台机器已经验证过 SP Flash Tool 全量刷原厂包能救砖。
 
-simple-framebuffer 的物理地址和内存大小没有实测值。地址猜错 = 内核往错误
-物理内存写像素，会把内存写花，所以首版刻意关掉显示，用 USB 串口当判据，
-内存也只声明低 2GB（3GB 在 LPAE 下可能被拆到 4GB 以上）。
+详见 [`docs/FLASH.md`](docs/FLASH.md)。摘要：
 
-拿到 `/proc/iomem`、`/sys/class/graphics/fb0/*` 之后就能开显示。
+- 只动 `boot` / `recovery`，**绝不碰** `preloader` / `lk` / `tee`
+- 原厂包 `gionee-gn3002_SV1.0_5.1_2017.10.11.zip` 必须留着，那是唯一可靠的救援手段
+- LK 的 `fastboot boot` 会因为"低电量误报"被拒绝，别在这上面浪费时间
+- 进 fastboot 要按物理键，`adb reboot bootloader` 不可靠
 
 ## 许可
 
-- 本仓库代码与脚本：**BSD-3-Clause**，见 `LICENSE`
-- `dts/` 下的设备树同样为 **BSD-3-Clause**（与 GPL-2.0 项目兼容，可直接进内核树）
-- 引用的内核源码（mt6735-mainline/linux）为 **GPL-2.0-only**
+- 本仓库脚本与文档：BSD-3-Clause，见 `LICENSE`
+- 引用的内核源码（mt6735-mainline/linux）为 GPL-2.0-only
+- 移植所用的原厂 blobs 版权归联发科 / 金立所有，不随本仓库分发

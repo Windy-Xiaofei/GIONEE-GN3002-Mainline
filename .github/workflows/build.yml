@@ -1,4 +1,4 @@
-name: build-boot-img
+name: mainline-kernel (archived)
 
 on:
   push:

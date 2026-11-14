@@ -1,94 +1,112 @@
-# Gionee GN3002 (F306) — Linux 主线移植
+# Android 移植计划
 
-MT6735 / 3GB LPDDR3 / 32GB eMMC / 5" 720x1280 / MT6328 PMIC
+目标：给 GN3002 做一套**能给日常用**的 Android，而不是能开机就完事的实验品。
 
----
+## 为什么选 8.1 而不是直接上 9
 
-## 1. 关于 lk2nd 的结论（重要）
+| 依据 | 事实 |
+|---|---|
+| MT6735 最远的现成设备树 | Coolpad `mt6735-common` 的 **lineage-15.1**（8.1），306 个文件，持续维护到 2026-10 |
+| MT6735 的 9 代设备树 | 搜遍 GitHub 为 **0**，没人做过 |
+| 8.1 与 9 的门槛差异 | 很小：两者都要 HWC2、gralloc1、严格 SELinux。8.1 已把这些坑填过 |
+| 8.1 与 7.1 的差异 | 很大：HWC2、HIDL 服务、audio policy XML、linker namespace |
 
-**lk2nd 是 Qualcomm 专用，MT6735 用不了。**
+所以策略是：**用 8.1 的成熟骨架把机器跑起来，再推 9**。先做 7.1 或先做 8.1 的中间态都是浪费。
 
-lk2nd 建立在 Qualcomm 的 LK/aboot 之上，依赖：
-
-- Qualcomm 的 `aboot` 引导协议与 QCDT 设备树打包
-- `fastboot boot` 从内存引导
-- msm8916/8974 等平台的时钟、电源、存储初始化代码
-
-MT6735 的引导链是 **preloader → LK（MTK 版）**，LK 是 MTK 自己的代码库，
-与 Qualcomm LK 只是同名，寄存器、启动参数、设备树传递方式全都不同。
-把 lk2nd 编译到 MT6735 上没有可运行的硬件抽象层。
-
-社区里对应的东西是 mt6735-mainline 的 **U-Boot 移植**
-（`gitlab.com/mt6735-mainline/u-boot`，目前只有 grandpplte 一个板子），
-作用类似 lk2nd：提供 fastboot / 菜单 / 从内存引导。但它**不是必需品**——
-这颗 SoC 的原厂 LK 本身能直接引导 arm64 内核。
-
-所以本项目的路线是：
+## 技术路线
 
 ```
-preloader -> LK -> [Image.gz + DTB] (boot 分区) -> mainline
+原厂 5.1 内核（预编译 Image.gz-dtb）  ← 面板/触摸/传感器/基带/WiFi 驱动都在这
+        +
+LineageOS 15.1 框架（源码编译）      ← 新系统
+        +
+原厂 5.1 vendor blobs（从 system.img 提取）  ← MTK 的 HAL 与固件
 ```
 
-U-Boot 留作后续可选项（想要 `fastboot boot` 反复试内核时再上）。
+关键决策：**不做内核开发**，用 `TARGET_PREBUILT_KERNEL` 指向原厂内核。这台机器没有 3.10
+源码，而且原厂内核把这些硬件都点亮了，重写没有收益。
 
-## 2. 已经确认的事实（从原厂固件里挖出来的）
+同 SoC 的 Coolpad 树已经把 MTK 在 8.1 上的坑填平了，可直接参照的部分：
 
-| 项目 | 值 | 来源 |
-|---|---|---|
-| SoC | MT6735（Denali-1，4×A53@1.3G，Mali-T720 MP2） | scatter / preloader 名 |
-| 平台工程名 | `gionee6735_66t_l1` | `MT6735_Android_scatter.txt` |
-| 原厂内核 | Linux **3.10.65**，gcc 4.9，2016-05-12 | `vmlinux` / boot.img |
-| boot 分区 | 8 MB（0x1D80000，大小 0x1000000） | scatter |
-| 页大小 | 2048 | boot.img header |
-| 内核布局 | `Image.gz` + **DTB 直接拼在 gzip 流之后**（dt_size 字段=0） | 实测 boot.img |
-| 启动模式串 | `bootopt=64S3,32N2,64N2` → LK **会**做 AArch64 切换，不需要 bootshim | boot.img cmdline |
-| 内存 | 3GB（待设备实测确认映射） | PDAdb |
-| 屏幕 | 720×1280 IPS，面板三选一：`tcl_db7400` / `tianma+FT8606` / `tcl_xinsi xs4100` | LK 字符串 |
-| 触摸 | EINT = GPIO10；控制器 FocalTech FT5x26/FT8606 或 Solomon SSD6600（跟面板走） | 原厂 DTB + 内核字符串 |
-| 传感器 | MC3410(加速度) / ITG1010(陀螺) / AKM09911(磁力) / CM36652(光距)，都在 i2c2 | 原厂 DTB |
-| SD 卡检测 | EINT5 | 原厂 DTB(`MSDC1_INS@5`) |
-| PMIC | MT6328（电源键在 PMIC 内） | 原厂 DTB + dtsi |
-| 不支持 | WiFi/BT(MT6630)、Modem、音频、摄像头、GPU 加速 | mainline 现状 |
+- `TARGET_USES_HWC2 := true` + `MTK_HWC_VERSION := 1.4.1`（HWC1 到 HWC2 的桥）
+- `TARGET_HAS_LEGACY_CAMERA_HAL1 := true`（让 MTK 相机 blob 在 8.1 上能跑）
+- **60 多条 `TARGET_LD_SHIM_LIBS`**（bionic / icu / ui / omx / socket 的兼容 shim）
+- 全套 MTK daemon 的 SELinux policy（ccci / nvram / thermal / wmt / rild / agpsd …）
+- HIDL 服务：audio@2.0、composer@2.1、camera.provider@2.4、wifi@1.0、bluetooth@1.0-service.mtk
 
-**打包器已验证**：`scripts/mkbootimg_mtk.py` 用原厂 Image.gz + DTB + ramdisk
-重新打包，输出与原厂 `boot.img` **逐字节一致**（8110080 字节），
-说明对 MTK boot image 格式的理解是对的。
+我们与它的差异只在**机型层**：面板 `tm_ft8606`、触摸 FT8606、双卡配置、分区大小、按键布局。
 
-## 3. 主线内核现状（mt6735-staging, Linux 7.3.0-rc3）
+## 里程碑
 
-上游主线**没有** mt6735 支持，社区树 `gitlab.com/mt6735-mainline/linux`
-分支 `mt6735-staging` 才有 `mt6735.dtsi` / `mt6328.dtsi` 和驱动补丁。
+### M1 — TWRP（先做这个）
 
-已有的：UART、eMMC/SD、I2C、pinctrl、PMIC(MT6328 稳压器/RTC/按键)、
-USB(musb)、SMP、cpufreq、cpuidle、simple-framebuffer。
+- 产物：`recovery.img`
+- 判据：能进 recovery、显示正常、触摸可用、adb 可用
+- 意义：验证设备树骨架、fstab、预编译内核打包；recovery 是独立分区，**刷坏不影响系统**，
+  而且顺手建立一条救援通道
+- 预估：源码约 12GB，构建 40-60 分钟
 
-缺的：显示控制器(DRM)、WiFi、音频、摄像头、充电、温控。
+### M2 — LineageOS 15.1 首启
 
-所以现实目标：**启动到 initramfs + USB 串口 shell**，再逐步补显示/触摸。
+- 判据：开机进系统，显示 + 触摸 + adb + logcat 正常
+- 预估：构建 3-4 小时
 
-## 4. 路线
+### M3 — 功能补齐
 
-### v1（首启，安全优先）
-- 内核：7.3.0-rc3 + mt6735-staging
-- 设备树：`mt6735-gionee-gn3002.dts`
-- initramfs **编进内核**（不依赖 LK 是否正确传 initrd）
-- 显示**先关掉**（simple-framebuffer 地址没实测，写错会破坏内存）
-- 判据：USB 上出现 `/dev/ttyACM*`，能进 shell；pstore 有上次日志
+按"能当手机用"的优先级：
 
-### v2（有实测数据后）
-- 填入 FB 基址 / stride，打开 simple-framebuffer → 屏幕出 console
-- 触摸：确认 i2c 总线/地址/reset GPIO → 打开 `edt-ft5x06`
-- 音量键：确认是 GPIO 还是 KP 矩阵
-- 内存大小按 `/proc/iomem` 修正
+1. WiFi（`/dev/wmtWifi` + `WIFI_RAM_CODE_6735`）
+2. 音频（`audio.primary.mt6735.so` + `audio_device.xml`）
+3. RIL（mtkrild + ccci，双卡 dsda）
+4. 相机（legacy HAL1）
+5. 传感器、亮度、按键、充电显示
 
-### v3（可选）
-- U-Boot 二级引导（≈ lk2nd 的用法），`fastboot boot` 免刷机试内核
-- 真 rootfs（postmarketOS / Alpine）从 SD 卡或 userdata 启动
-- GPU/DRM 等长期项
+每项独立验收，失败不影响其他项。
 
-## 5. 风险与恢复
+### M4 — Android 9（LineageOS 16.0）
 
-- 只动 **boot 分区**，system/userdata 不碰
-- 刷之前先备份：`adb shell su -c 'dd if=/dev/block/by-name/boot of=/sdcard/boot-stock.img'`
-- 挂了就 `fastboot flash boot boot-stock.img`，或用 SP Flash Tool 只勾 boot
-- 不要刷 preloader / lk / tee —— 那是变砖区
+在 M3 基础上把设备树从 15.1 推到 16.0。已知增量：
+
+- SELinux 更严（`neverallow` 会挡住老 blob 的很多操作）
+- HIDL 版本对齐（audio 可能需要 @4.0 / @5.0）
+- `android.hardware.radio` 接口变化
+- audio policy 全面 XML 化
+
+## 仓库结构（计划）
+
+```
+device/gionee/gbl7356/          # 机型层（本仓库主战场）
+  BoardConfig.mk                # 预编译内核、分区大小、HWC2、shim 列表
+  gbl7356.mk                    # 产品定义、权限、keylayout
+  rootdir/fstab.mt6735          # 沿用原厂分区表
+  rootdir/init.mt6735.rc        # 从原厂 ramdisk 适配
+  configs/                      # audio_device.xml、media_codecs.xml、WPS 配置
+  sepolicy/                     # 机型-specific policy
+vendor/gionee/gbl7356/          # 从原厂 system.img 提取的 blobs
+local_manifests/                # 引入 mt6735-common 与 LineageOS 15.1
+```
+
+## CI 方案
+
+公开仓库 + GitHub Actions（公开仓库不计时长）。
+
+- M1 阶段：TWRP 最小 manifest（约 12GB 源码）
+- M2 起：LineageOS 15.1 完整 manifest（约 30GB 源码）
+- Runner 根分区只有约 14GB 空闲，构建目录需要落到 `/mnt`（约 65GB）
+- 单个 job 有 6 小时上限，15.1 构建需在 4 小时内完成，否则要拆缓存
+
+## 风险与对策
+
+| 风险 | 对策 |
+|---|---|
+| 预编译内核缺少 8.1 需要的特性（如 sdcardfs） | 先用 FUSE 兼容路径；实在不行再找同 SoC 的 3.10 源码编 |
+| MTK blob 与 8.1 的 linker/SELinux 冲突 | 直接复用 Coolpad 树的 shim 与 policy，逐条对齐 |
+| 相机在 8.1 上崩（clang 对齐问题） | 用 legacy HAL1；接受"相机最后做、可能做不出来" |
+| CI 构建超时 | 先 TWRP 打通流程，再上完整 ROM；必要时用 ccache 或拆分 |
+| 变砖 | 只动 boot / recovery，preloader / lk / tee 一律不碰；原厂包常备 |
+
+## 不做的事
+
+- 不为了"新版本号"牺牲可用性。目标是能打电话、能上网、能用相机
+- 不在真机上盲试。每次改动先在 CI 出包，再用 logcat / dmesg 定位
+- 不碰 NV 数据分区（nvdata 里有基带校准，格式化会导致无信号）
