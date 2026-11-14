@@ -71,6 +71,7 @@ jobs:
             --enable CMDLINE_FORCE \
             --enable PSTORE_PMSG \
             --enable FB_SIMPLE
+          ../scripts/trim-config.sh .
           ./scripts/config --set-str INITRAMFS_SOURCE "$PWD/../initramfs"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           grep -E '^CONFIG_(INITRAMFS_SOURCE|CMDLINE|CMDLINE_FORCE|MTK_PMIC_WRAP|REGULATOR_MT6328|MMC_MTK|PINCTRL_MT6735)=' .config
@@ -121,7 +122,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev \
             gcc-aarch64-linux-gnu make xz-utils \
-            qemu-system-arm
+            qemu-system-arm qemu-efi-aarch64
 
       - name: Fetch kernel source
         run: |
@@ -154,6 +155,7 @@ jobs:
             --enable SERIAL_AMBA_PL011 \
             --enable SERIAL_AMBA_PL011_CONSOLE \
             --enable SERIAL_EARLYCON
+          ../scripts/trim-config.sh .
           ./scripts/config --set-str INITRAMFS_SOURCE "$PWD/../initramfs"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           grep -E '^CONFIG_(CMDLINE|SERIAL_AMBA_PL011|SERIAL_EARLYCON|INITRAMFS_SOURCE)=' .config
@@ -167,7 +169,7 @@ jobs:
         run: |
           timeout 90 qemu-system-aarch64 \
             -M virt,gic-version=2 -cpu cortex-a53 -m 1024 \
-            -nographic -no-reboot \
+            -nographic -no-reboot -nic none \
             -kernel kernel/arch/arm64/boot/Image \
             -append "console=ttyAMA0 earlycon=pl011,0x09000000 loglevel=7 panic=-1" \
             > serial.log 2>&1 || true
